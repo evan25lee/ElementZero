@@ -1,0 +1,117 @@
+name: CI
+
+on: [push]
+
+env:
+  eatpdb_version: v0.0.5
+  bds_version: 1.14.60.5
+
+jobs:
+  build:
+
+    runs-on: windows-latest
+
+    steps:
+    - uses: actions/checkout@v2
+      with:
+        submodules: 'recursive'
+
+    - name: run-vcpkg
+      uses: lukka/run-vcpkg@v2
+      with:
+        vcpkgDirectory: '${{ github.workspace }}/vcpkg'
+        vcpkgArguments: '@${{ github.workspace }}/vcpkg.txt'
+        appendedCacheKey: ${{ hashFiles(env.vcpkgResponseFile) }}
+
+    - uses: ilammy/msvc-dev-cmd@v1
+      with:
+        arch: x64
+
+    - name: install llvm
+      run: |
+        Invoke-Expression (New-Object System.Net.WebClient).DownloadString('https://get.scoop.sh')
+        scoop install llvm tar --global
+    - name: set environment
+      run: |
+        echo "::set-env name=CC::clang-cl"
+        echo "::set-env name=CXX::clang-cl"
+        echo "::set-env name=PATH::C:/ProgramData/scoop/shims;$env:PATH"
+
+    - name: Cache lib artifacts
+      uses: actions/cache@v1
+      id: libcache
+      with:
+        path: ${{ github.workspace }}/Lib
+        key: lib-${{ hashFiles( 'eatpdb.yaml' ) }}-${{ hashFiles( 'index.ico' ) }}-${{ env.eatpdb_version }}-${{ env.bds_version }}
+
+    - name: Download BDS
+      if: steps.libcache.outputs.cache-hit != 'true'
+      run: |
+        curl -L -o D:/bds.zip https://minecraft.azureedge.net/bin-win/bedrock-server-${{ env.bds_version }}.zip
+        mkdir BDS
+        cd BDS
+        unzip D:/bds.zip
+      shell: bash
+
+    - name: Install EatPdb
+      if: steps.libcache.outputs.cache-hit != 'true'
+      run: |
+        curl -L -o D:/eatpdb.zip https://github.com/codehz/EatPdb/releases/download/${{ env.eatpdb_version }}/win-x64.zip
+        mkdir D:/eatpdb
+        cd D:/eatpdb
+        unzip D:/eatpdb.zip
+      shell: bash
+
+    - name: Build bedrock_server_mod
+      if: steps.libcache.outputs.cache-hit != 'true'
+      run: |
+        curl -L -o D:/rcedit.exe https://github.com/electron/rcedit/releases/download/v1.1.1/rcedit-x64.exe
+        mkdir Lib Dist
+        cd BDS
+        D:/rcedit.exe bedrock_server.exe --set-icon ../index.ico
+        D:/eatpdb/eatpdb exec ../eatpdb.yaml
+        lib /def:bedrock_server_mod.def /machine:x64
+        cp addition_symbols.db ../Lib
+        cp bedrock_server_mod.lib ../Lib
+        cp bedrock_server_mod.exe ../Lib
+      shell: bash
+
+    - name: Build ElementZero
+      uses: lukka/run-cmake@v2
+      with:
+        cmakeListsOrSettingsJson: CMakeSettingsJson
+    
+    - name: Install & Packaging
+      run: |
+        cd /d/a/_temp/RelWithDebInfo
+        "/c/Program Files/CMake/bin/cpack" -G TZST .
+        "/c/Program Files/CMake/bin/cpack" -G STGZ .
+        "/c/Program Files/CMake/bin/cpack" -G ZIP .
+        "/c/Program Files/CMake/bin/cpack" -G 7Z .
+        ninja install
+      shell: bash
+
+    - name: Create a new GitHub release if a new tag is pushed
+      uses: softprops/action-gh-release@v1
+      with:
+        name: v${{ env.GITHUB_TAG_NAME }}
+        prerelease: false
+        draft: true
+        files: |
+          pack/ElementZero-*
+        body: (empty)
+      if: startsWith(github.ref, 'refs/tags/')
+      env:
+        GITHUB_TOKEN: ${{secrets.GITHUB_TOKEN}}
+
+    - name: Upload artifact
+      uses: actions/upload-artifact@v1.0.0
+      with:
+        name: dist
+        path: C:/Program Files (x86)/ElementZero/
+
+    - name: Upload vcpkg installed
+      uses: actions/upload-artifact@v1.0.0
+      with:
+        name: vcpkg
+        path: vcpkg/installed/${{ env.RUNVCPKG_VCPKG_TRIPLET_OUT }}
